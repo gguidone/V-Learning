@@ -16,8 +16,17 @@ class HedgeBandit:
         self.weights = np.zeros(num_actions)
 
     def get_distribution(self):
-        exp_w = np.exp(self.weights)
-        return exp_w / np.sum(exp_w)
+        # Numerically stable softmax: subtract max before exponentiating
+        w = self.weights
+        max_w = np.max(w)
+        shifted = w - max_w               # now max(shifted)=0, so exp(shifted) ≤ 1
+        exp_shifted = np.exp(shifted)
+        total = np.sum(exp_shifted)
+        if total == 0:
+            # (Should rarely happen if you zero-initialized weights and apply small updates,
+            # but just in case all weights become extremely negative, default to uniform.)
+            return np.ones(self.num_actions) / self.num_actions
+        return exp_shifted / total
 
     def sample_action(self):
         probs = self.get_distribution()

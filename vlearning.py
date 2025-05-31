@@ -149,3 +149,10 @@ class VLearning:
                     policy[h][s] = dist_mixture
 
         return policy
+
+    def get_greedy_policy(self):
+        greedy = {h: {s: None for s in range(self.S)} for h in range(self.H)}
+        for h in range(self.H):
+            for s in range(self.S):
+                greedy[h][s] = self.bandits[h][s].get_distribution()
+        return greedy
