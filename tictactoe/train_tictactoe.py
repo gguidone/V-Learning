@@ -13,6 +13,7 @@ def train_and_save(K=20000, seed=2025):
     - policy_O.pkl will contain O’s final policy dict.
     """
     # Run V‐Learning for both players (in lockstep)
+    print(f"Training Tic-Tac-Toe for {K} episodes with seed {seed}...")
     policy_X, policy_O = run_two_player_tictactoe(K=K, seed=seed)
     
     # Save X’s policy
@@ -27,4 +28,4 @@ def train_and_save(K=20000, seed=2025):
 
 if __name__ == "__main__":
     # You can change K or seed as you like
-    train_and_save(K=200000, seed=2025)
+    train_and_save(K=500000, seed=2025)

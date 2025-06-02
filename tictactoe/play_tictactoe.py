@@ -95,10 +95,32 @@ def play_against_policy(policy_X, policy_O):
         else:
             state_code = encode_state(board, turn)
             if turn == 1:
-                dist = policy_X[move_count][state_code]
+                full_dist = policy_X.get(move_count, {}).get(state_code, np.ones(9)/9)
             else:
-                dist = policy_O[move_count][state_code]
-            mv = int(np.argmax(dist))
+                full_dist = policy_O.get(move_count, {}).get(state_code, np.ones(9)/9)
+
+            # Build mask of legal moves (empty cells)
+            legal = [i for i in range(9) if board[i] == 0]
+            if not legal:
+                # No empty cells → draw
+                print_board(board)
+                print("Draw!\n")
+                return
+
+            # Zero out illegal (occupied) cells
+            masked = np.zeros_like(full_dist)
+            masked[legal] = full_dist[legal]
+
+            # If masked sum is zero, fall back to uniform over legal moves
+            if masked.sum() == 0.0:
+                probs = np.zeros(9)
+                for i in legal:
+                    probs[i] = 1.0 / len(legal)
+            else:
+                probs = masked / masked.sum()
+
+            # Pick the AI move among legal ones (argmax)
+            mv = int(np.argmax(probs))
             print(f"AI ({'X' if turn==1 else 'O'}) chooses {mv}\n")
             board[mv] = turn
             move_count += 1
@@ -128,5 +150,4 @@ def main():
     play_against_policy(policy_X, policy_O)
 
 if __name__ == "__main__":
-    import pickle
     main()
