@@ -15,15 +15,15 @@ class VLearning:
     to build the α-mixture, avoiding giant pre-allocations.
     """
 
-    def __init__(self, env, num_episodes, H, S, A):
+    def __init__(self, env, num_episodes, H):
         self.env = env
         self.K = num_episodes
         self.agents = env.agents
         self.params = {}
 
         self.H = H
-        self.S = S
-        self.A = A
+        # self.S = S
+        # self.A = A
 
         for agent in self.agents:
             self.params[agent] = {
@@ -51,7 +51,7 @@ class VLearning:
         """
         for k in trange(1, self.K + 1, desc="Training Episodes"):
             h = 0 #timestep
-            self.env.reset(seed=42)
+            self.env.reset(seed=42) #maybe remove seed to get randomness across episodes?
             observation, reward, termination, truncation, info = self.env.last()
             for agent in self.env.agent_iter():
                 h+=1 #timestep starts at h = 1
