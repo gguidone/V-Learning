@@ -4,13 +4,14 @@
 
 import numpy as np
 from tqdm import trange, tqdm
-from vlearning.bandit import HedgeBandit
+from vlearning.ftrl_bandit import FTRLBandit
 from collections import defaultdict
 import bisect
+from pettingzoo.classic import tictactoe_v3
 
 class VLearning:
     """
-    Memory-sparse V-Learning with a tqdm progress bar.  
+    Memory-sparse V-Learning with a tqdm progress bar.
     Only stores visited (h, s, i) distributions and uses final visit counts
     to build the α-mixture, avoiding giant pre-allocations.
     """
@@ -20,6 +21,7 @@ class VLearning:
         self.K = num_episodes
         self.agents = env.agents
         self.params = {}
+        self.agent_action={}
 
         self.H = H
         # self.S = S
@@ -32,13 +34,9 @@ class VLearning:
             'N_count' : defaultdict(list), #keys are (h,s), values are list of episodes when (h,s) visited. eg [1,5,6]. times visited = len of list
 
         # One HedgeBandit per (h, s)
-            'bandits' : defaultdict(lambda: HedgeBandit(9,9)), #default dict with default value HedgeBandit(9,9). keys are (h,s). Maybe can reduce number of actions for increasing time step
-            'policies': defaultdict(lambda: [np.array([1]*9)/9]) #initial policy is uniform over 9 actions. key is (h,s). length of list is number of times visited - 1
+            'bandits' : defaultdict(lambda: FTRLBandit(9,9,self.K)), #default dict with default value HedgeBandit(9,9). keys are (h,s). Maybe can reduce number of actions for increasing time step
+            'policies': defaultdict(lambda: [np.array([1]*9)/9]) #initial policy is uniform over 9 actions. key is (h,s). length of list is number of times visited - 1. values are distribution
             }
-
-        # Only store distributions for visits that actually happen.
-        # Key = (h, s, visit_index_i), value = length-A numpy array.
-        self.stored_distributions = {}
 
     def alpha_t(self, t):
         return (self.H+1)/(self.H+t)
@@ -52,22 +50,27 @@ class VLearning:
         for k in trange(1, self.K + 1, desc="Training Episodes"):
             h = 0 #timestep
             self.env.reset(seed=42) #maybe remove seed to get randomness across episodes?
-            observation, reward, termination, truncation, info = self.env.last()
+            observation, reward, termination, truncation, info = self.env.last() # rewards are for the next agent because after player 1 acts then it's player's 2 turn so the reward is for player 2's previous action.
             for agent in self.env.agent_iter():
                 h+=1 #timestep starts at h = 1
-                # observations are not the same for each agent. observation['observation']
-                s =  self.env.observe(self.agents[0])['observation'] # unify observation using player_1 as reference.
+                # print(f'h={h}')
+                # observations are not the same for each agent. observation['observation']. Player 1 is +1, player 2 is -1. 0 is empty
+                s =  self.env.observe(self.agents[0])['observation'][:,:,0] - self.env.observe(self.agents[0])['observation'][:,:,1]# unify observation using player_1 as reference.
+                # print(s)
                 key = (h,s.tobytes())
                 if termination or truncation:
-                    action = None
+                    break
                 else:
                     mask = observation["action_mask"]
                     # this is where you would insert your policy
                     # action = env.action_space(agent).sample(mask)
-                    action = self.params[agent]['bandits'][key].sample_action()
-                self.env.step(action)
-                observation, reward, termination, truncation, info = self.env.last()
-                next_s = self.env.observe(self.agents[0])['observation']
+                    for player in self.agents:#sample actions from both players
+                        action = self.params[player]['bandits'][key].sample_action()
+                        self.agent_action[player] = action
+                # print(f'action = {self.agent_action[agent]}')
+                self.env.step(self.agent_action[agent])
+                observation, reward, termination, truncation, info = self.env.last() # rewards are for the next agent because after player 1 acts then it's player's 2 turn so the reward is for player 2's previous action.
+                next_s = self.env.observe(self.agents[0])['observation'][:,:,0] - self.env.observe(self.agents[0])['observation'][:,:,1]
                 for player in self.agents: #update params for both agents
                     self.params[player]['N_count'][key].append(k) #append episode when (h,s) visited.
                     t = len(self.params[player]['N_count'][key]) #number of times (h,s) visited across episodes
@@ -75,15 +78,15 @@ class VLearning:
                     beta_t = 0
                     next_V = self.params[player]['V'][(h+1,next_s.tobytes())] if h<self.H else 0 #0 Value if at terminal step
                     self.params[player]['V_tilde'][key] = (
-                            (1-alpha_t)*self.params[player]['V_tilde'][key]) + alpha_t*(reward+next_V+beta_t)
+                            (1-alpha_t)*self.params[player]['V_tilde'][key]) + alpha_t*(env.rewards[player]+next_V+beta_t)
                     self.params[player]['V'][key] = min(1, self.params[player]['V_tilde'][key])
-                    self.params[player]['bandits'][key].update(action,(1-reward-next_V)/1)
-                    self.params[player]['policies'][key].append(self.params[player]['bandits'][key].get_distribution())
+                    self.params[player]['bandits'][key].update(self.agent_action[player],(1-env.rewards[player]-next_V)/1)
+                    self.params[player]['policies'][key].append(self.params[player]['bandits'][key].get_distribution())#append distribution
             self.env.close()
 
     def get_output_policy_sparse(self):
             """
-            Build a sparse policy dict, showing a tqdm bar while iterating 
+            Build a sparse policy dict, showing a tqdm bar while iterating
             over exactly the (h,s) pairs that were visited in training.
             Returns:
                 sparse_policy: { h: { s: length-A numpy array } }
@@ -123,7 +126,7 @@ class VLearning:
 
             return sparse_policy
 
-    def sample_output_policy(self,state,h:int,k:int):
+    def sample_output_policy(self,state,h:int,k:int)->dict:
         # input k = np.random.randint(self.K) sampled from [0,K-1]. Use same k for all timestep
         # state should be from player_1 observation only for both players
         key = (h,state.tobytes())
@@ -136,15 +139,20 @@ class VLearning:
             for idx in range(t, -1, -1):
                 alpha_probs[idx] = alpha_probs[idx] * prod
                 prod *= (1.0 - self.alpha_t(idx))
-            if alpha_probs.sum() != 1:
-                print(alpha_probs.sum())
-            assert alpha_probs.sum() == 1# check that it is probability
-            i = np.random.choice(t+1, p=alpha_probs) #sample i from [0,t]
+            # if alpha_probs.sum() != 1:
+            #     print(alpha_probs.sum())
+            # assert alpha_probs.sum() == 1# check that it is probability
+            i = np.random.choice(t+1, p=alpha_probs/alpha_probs.sum()) #sample i from [0,t]. alpha_probs not exactly sum to 1 due to rounding errors.
             #episode when (h,s) visited for the ith time.
-            k = self.params[agent]['N_count'][key][i-1] #index from 0
-            a = self.params[agent]['policies'][key][k].sample_action #policy before ith visit
+            # k = self.params[agent]['N_count'][key][i-1] #index from 0
+            a = np.random.choice(9,p=self.params[agent]['policies'][key][i-1]) #policy before ith visit. hard coded action space size.
             policies[agent] = a
         return policies
+
+env = tictactoe_v3.env()
+env.reset(seed=42)
+alg = VLearning(env,10,9)
+alg.train()
 
 
 
