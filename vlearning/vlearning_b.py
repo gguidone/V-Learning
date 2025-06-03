@@ -16,12 +16,13 @@ class VLearning:
     to build the α-mixture, avoiding giant pre-allocations.
     """
 
-    def __init__(self, env, num_episodes, H):
+    def __init__(self, env, num_episodes, H, beta_c):
         self.env = env
         self.K = num_episodes
         self.agents = env.agents
         self.params = {}
         self.agent_action={}
+        self.beta_c = beta_c
 
         self.H = H
         # self.S = S
@@ -29,11 +30,11 @@ class VLearning:
 
         for agent in self.agents:
             self.params[agent] = {
-            'V_tilde': defaultdict(lambda:1), #init at 1s for tictactoe keys are (h,s)
+            'V_tilde': defaultdict(lambda:0.5*8+1), #init 0.5 rewards for 8 step and win on final step
             'V' : defaultdict(int), #keys are (h,s)
             'N_count' : defaultdict(list), #keys are (h,s), values are list of episodes when (h,s) visited. eg [1,5,6]. times visited = len of list
 
-        # One HedgeBandit per (h, s)
+        # One bandit per (h, s)
             'bandits' : defaultdict(lambda: FTRLBandit(9,9,self.K)), #default dict with default value HedgeBandit(9,9). keys are (h,s). Maybe can reduce number of actions for increasing time step
             'policies': defaultdict(lambda: [np.array([1]*9)/9]) #initial policy is uniform over 9 actions. key is (h,s). length of list is number of times visited - 1. values are distribution
             }
@@ -51,38 +52,64 @@ class VLearning:
             h = 0 #timestep
             self.env.reset(seed=42) #maybe remove seed to get randomness across episodes?
             observation, reward, termination, truncation, info = self.env.last() # rewards are for the next agent because after player 1 acts then it's player's 2 turn so the reward is for player 2's previous action.
+            stop = False
             for agent in self.env.agent_iter():
                 h+=1 #timestep starts at h = 1
-                # print(f'h={h}')
+                if h == 10:#terminate because game ended
+                    stop = True
                 # observations are not the same for each agent. observation['observation']. Player 1 is +1, player 2 is -1. 0 is empty
                 s =  self.env.observe(self.agents[0])['observation'][:,:,0] - self.env.observe(self.agents[0])['observation'][:,:,1]# unify observation using player_1 as reference.
-                #print(s)
                 key = (h,s.tobytes())
-                if termination or truncation:
+                # mask = observation["action_mask"]
+                # this is where you would insert your policy
+                # action = env.action_space(agent).sample(mask)
+                if stop:#update params for current state = terminal state then end game
+                    """
+                    Not sure if update params for current state = terminal state needed.
+                    """
+                    # for player in self.agents:  # update params for both agents
+                    #     self.params[player]['N_count'][key].append(k)  # append episode when (h,s) visited.
+                    #     t = len(self.params[player]['N_count'][key])  # number of times (h,s) visited across episodes
+                    #     alpha_t = (self.H + 1) / (self.H + t)
+                    #     beta_t = self.beta_c * np.sqrt(
+                    #         9 ** 3 * 9 * np.log(9 * (3 ** 9) * 9 * self.K / 0.01) / t)  # delta = 0.01
+                    #     reward = 0
+                    #     self.params[player]['V_tilde'][key] = ((1 - alpha_t) * self.params[player]['V_tilde'][key]) + alpha_t * (reward + next_V + beta_t)
+                    #     self.params[player]['V'][key] = min(0.5*8+1, self.params[player]['V_tilde'][key])
+                    #     # print("Reward for player", player, ":", env.rewards[player])
+                    #     self.params[player]['bandits'][key].update(self.agent_action[player], (0.5*8+1-reward-next_V)/(0.5*8+1))
+                    #     self.params[player]['policies'][key].append(
+                    #         self.params[player]['bandits'][key].get_distribution())  # append distribution
                     break
                 else:
-                    mask = observation["action_mask"]
-                    # this is where you would insert your policy
-                    # action = env.action_space(agent).sample(mask)
                     for player in self.agents:#sample actions from both players
-                        action = self.params[player]['bandits'][key].sample_action(mask = mask) #sample action from bandit
+                        action = self.params[player]['bandits'][key].sample_action(mask = self.env.observe(player)['action_mask']) #sample action from bandit, optional mask
                         self.agent_action[player] = action
-                #print(f'action = {self.agent_action[agent]}')
-                self.env.step(self.agent_action[agent])
+                    self.env.step(self.agent_action[agent])
                 observation, reward, termination, truncation, info = self.env.last() # rewards are for the next agent because after player 1 acts then it's player's 2 turn so the reward is for player 2's previous action.
                 next_s = self.env.observe(self.agents[0])['observation'][:,:,0] - self.env.observe(self.agents[0])['observation'][:,:,1]
                 for player in self.agents: #update params for both agents
                     self.params[player]['N_count'][key].append(k) #append episode when (h,s) visited.
                     t = len(self.params[player]['N_count'][key]) #number of times (h,s) visited across episodes
                     alpha_t = (self.H+1)/(self.H+t)
-                    beta_t = 0
-                    next_V = self.params[player]['V'][(h+1,next_s.tobytes())] if h<self.H else 0 #0 Value if at terminal step
+                    beta_t = self.beta_c*np.sqrt(9**3*9*np.log(9*(3**9)*9*self.K/0.01)/t) #delta = 0.01
+                    if np.array_equal(s,next_s):# s == next_s when illegal action selected
+                        next_V=0
+                        reward = self.env.rewards[player] + 1#illegal action by agent gets 0, other player gets 1
+                        stop = True
+                    else:
+                        next_V = self.params[player]['V'][(h+1,next_s.tobytes())]
+                        if self.env.rewards['player_1'] == self.env.rewards['player_2']:#game continues
+                            reward = 0.5
+                        else:
+                            reward = (self.env.rewards[player] + 1)/2 #game ends without illegal move
+                            stop = True
                     self.params[player]['V_tilde'][key] = (
-                            (1-alpha_t)*self.params[player]['V_tilde'][key]) + alpha_t*(env.rewards[player]+next_V+beta_t)
-                    self.params[player]['V'][key] = min(1, self.params[player]['V_tilde'][key])
+                            (1-alpha_t)*self.params[player]['V_tilde'][key]) + alpha_t*(reward+next_V+beta_t)
+                    self.params[player]['V'][key] = min(0.5*8+1, self.params[player]['V_tilde'][key])
                     #print("Reward for player", player, ":", env.rewards[player])
-                    self.params[player]['bandits'][key].update(self.agent_action[player],(1-env.rewards[player]-next_V)/1)
-                    self.params[player]['policies'][key].append(self.params[player]['bandits'][key].get_distribution())#append distribution
+                    self.params[player]['bandits'][key].update(self.agent_action[player],(0.5*8+1-reward-next_V)/(0.5*8+1))
+                    self.params[player]['policies'][key].append(self.params[player]['bandits'][key].get_distribution(mask=1-abs(s.flatten())))#append distribution. mask from current state, not next state
             self.env.close()
 
     def get_output_policy_sparse(self):
@@ -150,7 +177,64 @@ class VLearning:
             policies[agent] = a
         return policies
 
-env = tictactoe_v3.env()
-env.reset(seed=42)
-alg = VLearning(env,10,9)
+def get_state(env):
+    return env.observe('player_1')['observation'][:, :, 0] - env.observe('player_1')['observation'][:, :, 1]
+
+def play(vlearn,opponent = 'player_2',selfplay = False):
+    env = tictactoe_v3.env()
+    env.reset(seed=42)
+    k = np.random.randint(alg.K) #for output policy
+    assert opponent in env.agents
+    h=0
+    if selfplay:
+        for agent in env.agent_iter():
+            h+=1
+            observation, reward, termination, truncation, info = env.last()
+            s =  env.observe('player_1')['observation'][:, :, 0] - env.observe('player_1')['observation'][:, :, 1]
+            print(s)
+            if termination:
+                if env.rewards['player_1'] == env.rewards['player_2']:
+                    print('draw')
+                elif env.rewards['player_1'] > env.rewards['player_2']:
+                    print('player 1 wins')
+                else:
+                    print('player 2 wins')
+                break
+
+            action = alg.sample_output_policy(s, h, k)[agent]
+            print(f'{agent} chooses action {action}')
+            env.step(action)
+
+    else:
+        for agent in env.agent_iter():
+            h+=1
+            observation, reward, termination, truncation, info = env.last()
+            s =  env.observe('player_1')['observation'][:, :, 0] - env.observe('player_1')['observation'][:, :, 1]
+            print(s)
+            if termination:
+                if env.rewards['player_1'] == env.rewards['player_2']:
+                    print('draw')
+                elif env.rewards[opponent] < 0:
+                    print('you win')
+                else:
+                    print('you lose')
+                break
+            if opponent != agent:
+                print('your move')
+                action = int(input())
+                env.step(action)
+            else:
+                action = alg.sample_output_policy(s,h,k)[opponent]
+                print(f'opponent chooses action {action}')
+                env.step(action)
+    env.close()
+
+en = tictactoe_v3.env()
+en.reset(seed=42)
+# K=10460353203*5
+alg = VLearning(en,1000000,9,0.005)
 alg.train()
+# play(alg)
+
+#epsilon bound. delta = 0.01
+# print(np.sqrt(9**5*(3**9)*9*np.log(9*(3**9)*9*K/0.01)/K))

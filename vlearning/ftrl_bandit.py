@@ -72,7 +72,11 @@ class FTRLBandit:
                 # fallback: uniform over legal actions
                 legal = np.where(mask)[0]
                 dist = np.zeros_like(dist)
-                dist[legal] = 1.0 / len(legal)
+                # if no legal moves that means not the player's turn so just return uniform dist. The action of player out of turn doesn't matter anyway
+                if len(legal) == 0:
+                    dist = np.ones_like(dist) / self.B
+                else:
+                    dist[legal] = 1.0 / len(legal)
             else:
                 dist = dist / dist.sum()
 
