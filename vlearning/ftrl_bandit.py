@@ -32,7 +32,7 @@ class FTRLBandit:
         # At t=1, define prod_1_minus := 1 (empty product).
         self.prod_1_minus = 1.0
 
-    def get_distribution(self):
+    def get_distribution(self, mask = None):
         """
         Return θ_{t}(·) where t = self.current_round + 1.
         (If current_round=0, this returns uniform θ₁.)
@@ -40,40 +40,50 @@ class FTRLBandit:
         t_next = self.current_round + 1
         if t_next == 1:
             # Round 1: uniform
-            return self.last_distribution.copy()
-
-        # Otherwise, we just finished round k = current_round,
-        # and updated C[b] = ∑_{i=1..k} w_i·tildeℓ_i(b).
-        # We want θ_{k+1}(b) ∝ exp( − (η_k / w_k) · C_t[b] ).
-        k = self.current_round
-        # Compute α_k and w_k on the fly (we saved prod_1_minus for t=k).
-        alpha_k = float(self.H + 1) / float(self.H + k)
-        # For k=1, prod_1_minus was 1; for k>1, it is ∏_{i=2..k} (1 − α_i).
-        w_k = alpha_k / self.prod_1_minus
-
-        # Compute η_k = sqrt((H·ln B)/(B·k))
-        eta_k = np.sqrt((self.H * np.log(self.B)) / float(self.B * k))
-
-        factor = eta_k / w_k
-        scores = - factor * self.C  # length‐B
-
-        # softmax( scores )
-        m = np.max(scores)
-        exp_shifted = np.exp(scores - m)
-        total = np.sum(exp_shifted)
-        if total == 0.0:
-            dist = np.ones(self.B) / float(self.B)
+            dist = self.last_distribution.copy()
         else:
-            dist = exp_shifted / total
+            # Otherwise, we just finished round k = current_round,
+            # and updated C[b] = ∑_{i=1..k} w_i·tildeℓ_i(b).
+            # We want θ_{k+1}(b) ∝ exp( − (η_k / w_k) · C_t[b] ).
+            k = self.current_round
+            # Compute α_k and w_k on the fly (we saved prod_1_minus for t=k).
+            alpha_k = float(self.H + 1) / float(self.H + k)
+            # For k=1, prod_1_minus was 1; for k>1, it is ∏_{i=2..k} (1 − α_i).
+            w_k = alpha_k / self.prod_1_minus
+
+            # Compute η_k = sqrt((H·ln B)/(B·k))
+            eta_k = np.sqrt((self.H * np.log(self.B)) / float(self.B * k))
+
+            factor = eta_k / w_k
+            scores = - factor * self.C  # length‐B
+
+            # softmax( scores )
+            m = np.max(scores)
+            exp_shifted = np.exp(scores - m)
+            total = np.sum(exp_shifted)
+            if total == 0.0:
+                dist = np.ones(self.B) / float(self.B)
+            else:
+                dist = exp_shifted / total
+
+        if mask is not None:
+            dist *= mask
+            if dist.sum() == 0:
+                # fallback: uniform over legal actions
+                legal = np.where(mask)[0]
+                dist = np.zeros_like(dist)
+                dist[legal] = 1.0 / len(legal)
+            else:
+                dist = dist / dist.sum()
 
         self.last_distribution = dist.copy()
         return dist
 
-    def sample_action(self):
+    def sample_action(self, mask=None):
         """
         Sample aₜ ∼ θₜ(·), then increment current_round → t.
         """
-        pi_t = self.get_distribution()
+        pi_t = self.get_distribution(mask=mask)
         a_t = np.random.choice(self.B, p=pi_t)
         self.current_round += 1
 

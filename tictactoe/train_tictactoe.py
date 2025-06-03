@@ -28,4 +28,4 @@ def train_and_save(K=20000, seed=2025):
 
 if __name__ == "__main__":
     # You can change K or seed as you like
-    train_and_save(K=500000, seed=2025)
+    train_and_save(K=1000000, seed=2025)

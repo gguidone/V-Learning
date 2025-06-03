@@ -56,7 +56,7 @@ class VLearning:
                 # print(f'h={h}')
                 # observations are not the same for each agent. observation['observation']. Player 1 is +1, player 2 is -1. 0 is empty
                 s =  self.env.observe(self.agents[0])['observation'][:,:,0] - self.env.observe(self.agents[0])['observation'][:,:,1]# unify observation using player_1 as reference.
-                # print(s)
+                #print(s)
                 key = (h,s.tobytes())
                 if termination or truncation:
                     break
@@ -65,9 +65,9 @@ class VLearning:
                     # this is where you would insert your policy
                     # action = env.action_space(agent).sample(mask)
                     for player in self.agents:#sample actions from both players
-                        action = self.params[player]['bandits'][key].sample_action()
+                        action = self.params[player]['bandits'][key].sample_action(mask = mask) #sample action from bandit
                         self.agent_action[player] = action
-                # print(f'action = {self.agent_action[agent]}')
+                #print(f'action = {self.agent_action[agent]}')
                 self.env.step(self.agent_action[agent])
                 observation, reward, termination, truncation, info = self.env.last() # rewards are for the next agent because after player 1 acts then it's player's 2 turn so the reward is for player 2's previous action.
                 next_s = self.env.observe(self.agents[0])['observation'][:,:,0] - self.env.observe(self.agents[0])['observation'][:,:,1]
@@ -80,6 +80,7 @@ class VLearning:
                     self.params[player]['V_tilde'][key] = (
                             (1-alpha_t)*self.params[player]['V_tilde'][key]) + alpha_t*(env.rewards[player]+next_V+beta_t)
                     self.params[player]['V'][key] = min(1, self.params[player]['V_tilde'][key])
+                    #print("Reward for player", player, ":", env.rewards[player])
                     self.params[player]['bandits'][key].update(self.agent_action[player],(1-env.rewards[player]-next_V)/1)
                     self.params[player]['policies'][key].append(self.params[player]['bandits'][key].get_distribution())#append distribution
             self.env.close()
@@ -153,6 +154,3 @@ env = tictactoe_v3.env()
 env.reset(seed=42)
 alg = VLearning(env,10,9)
 alg.train()
-
-
-
