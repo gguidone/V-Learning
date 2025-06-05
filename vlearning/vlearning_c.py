@@ -31,7 +31,7 @@ class VLearning:
 
         for agent in self.agents:
             self.params[agent] = {
-            'V_tilde': defaultdict(int), #keys are (h,s)
+            'V_tilde': defaultdict(lambda:0.5*8+1), #keys are (h,s)
             'V' : defaultdict(lambda:0.5*8+1), #init 0.5 rewards for 8 step and win on final step
             'N_count' : defaultdict(list), #keys are (h,s), values are list of episodes when (h,s) visited. eg [1,5,6]. times visited = len of list
 
@@ -279,9 +279,10 @@ def play(vlearn=None,opponent = 'player_2',watch = False,eval=False,eps=1e6):
 en = tictactoe_v3.env()
 en.reset(seed=42)
 # K=10460353203*5
-alg = VLearning(en,10,9,0.005,True)
+alg = VLearning(en,10**6,9,0.005,True)
 alg.train()
 # play(alg)
 
 #epsilon bound. delta = 0.01
 # print(np.sqrt(9**5*(3**9)*9*np.log(9*(3**9)*9*K/0.01)/K))
+#baseline {'player 1 wins': 585692, 'player 2 wins': 287383, 'draw': 126925}

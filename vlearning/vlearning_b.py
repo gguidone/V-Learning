@@ -30,7 +30,7 @@ class VLearning:
 
         for agent in self.agents:
             self.params[agent] = {
-            'V_tilde': defaultdict(int), #keys are (h,s)
+            'V_tilde': defaultdict(lambda:0.5*8+1, #keys are (h,s)
             'V' : defaultdict(lambda:0.5*8+1), #init 0.5 rewards for 8 step and win on final step
             'N_count' : defaultdict(list), #keys are (h,s), values are list of episodes when (h,s) visited. eg [1,5,6]. times visited = len of list
 
