@@ -208,6 +208,7 @@ def play(vlearn=None,opponent = 'player_2',watch = False,eval=False,eps=1e6):
 
                     action = alg.sample_output_policy(s, h, k[agent])[agent]
                     env.step(action)
+            return res
 
         if watch:
             for agent in env.agent_iter():
