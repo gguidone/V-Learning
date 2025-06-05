@@ -16,13 +16,14 @@ class VLearning:
     to build the α-mixture, avoiding giant pre-allocations.
     """
 
-    def __init__(self, env, num_episodes, H, beta_c):
+    def __init__(self, env, num_episodes, H, beta_c,sym=False):
         self.env = env
         self.K = num_episodes
         self.agents = env.agents
         self.params = {}
         self.agent_action={}
         self.beta_c = beta_c
+        self.sym=sym
 
         self.H = H
         # self.S = S
@@ -42,6 +43,21 @@ class VLearning:
     def alpha_t(self, t):
         return (self.H+1)/(self.H+t)
 
+    # symmetries are all rotations plus reflection and rotation
+    def get_sym(self,state,ret_set=True):
+        if ret_set:
+            symmetries = set({np.rot90(state, i).tobytes() for i in range(4)}).union(
+                set({np.rot90(np.fliplr(state), i).tobytes() for i in range(4)}))
+            return frozenset(symmetries)
+        else:
+            symmetries = []
+            for i in range(4):
+                if np.rot90(state, i).tobytes() not in symmetries:
+                    symmetries.append(np.rot90(state, i).tobytes())
+                if np.rot90(np.fliplr(state),i).tobytes() not in symmetries:
+                    symmetries.append(np.rot90(np.fliplr(state),i).tobytes())
+            return symmetries
+
     def train(self):
         """
         Run K episodes of V-Learning with a tqdm progress bar.
@@ -59,7 +75,7 @@ class VLearning:
                     stop = True
                 # observations are not the same for each agent. observation['observation']. Player 1 is +1, player 2 is -1. 0 is empty
                 s =  self.env.observe(self.agents[0])['observation'][:,:,0] - self.env.observe(self.agents[0])['observation'][:,:,1]# unify observation using player_1 as reference.
-                key = (h,s.tobytes())
+                key = (h,self.get_sym(s)) if self.sym else (h,s.tobytes())
                 # mask = observation["action_mask"]
                 # this is where you would insert your policy
                 # action = env.action_space(agent).sample(mask)
@@ -83,7 +99,22 @@ class VLearning:
                     break
                 else:
                     for player in self.agents:#sample actions from both players
-                        action = self.params[player]['bandits'][key].sample_action(mask = self.env.observe(player)['action_mask']) #sample action from bandit, optional mask
+                        if self.sym:
+                            action = None
+                            sym_list = self.get_sym(s,False)
+                            # sample bandit with equivalent states. Need to transform mask to match state transformations
+                            for i in sym_list:
+                                # print('sample')
+                                # print(
+                                #     f'state = {np.frombuffer(i, dtype=np.int8)}, mask = {np.frombuffer(mask, dtype=np.int8)}')
+                                if action is None:#set action to be sampled from bandit using original state with not transformations
+                                    action = self.params[player]['bandits'][(h,i)].sample_action(
+                                    mask=1-abs(np.frombuffer(i,dtype=np.int8)))
+                                else:
+                                    self.params[player]['bandits'][(h, i)].sample_action(
+                                        mask=1-abs(np.frombuffer(i,dtype=np.int8)))
+                        else:
+                            action =  self.params[player]['bandits'][key].sample_action(mask = self.env.observe(player)['action_mask']) #sample action from bandit, optional mask
                         self.agent_action[player] = action
                     self.env.step(self.agent_action[agent])
                 observation, reward, termination, truncation, info = self.env.last() # rewards are for the next agent because after player 1 acts then it's player's 2 turn so the reward is for player 2's previous action.
@@ -98,7 +129,7 @@ class VLearning:
                         reward = self.env.rewards[player] + 1#illegal action by agent gets 0, other player gets 1
                         stop = True
                     else:
-                        next_V = self.params[player]['V'][(h+1,next_s.tobytes())]
+                        next_V = self.params[player]['V'][(h+1,self.get_sym(next_s))] if self.sym else self.params[player]['V'][(h+1,next_s.tobytes())]
                         if self.env.rewards['player_1'] == self.env.rewards['player_2']:#game continues
                             reward = 0.5
                         else:
@@ -107,57 +138,24 @@ class VLearning:
                     self.params[player]['V_tilde'][key] = (
                             (1-alpha_t)*self.params[player]['V_tilde'][key]) + alpha_t*(reward+next_V+beta_t)
                     self.params[player]['V'][key] = min(0.5*8+1, self.params[player]['V_tilde'][key])
-                    #print("Reward for player", player, ":", env.rewards[player])
-                    self.params[player]['bandits'][key].update(self.agent_action[player],(0.5*8+1-reward-next_V)/(0.5*8+1))
-                    self.params[player]['policies'][key].append(self.params[player]['bandits'][key].get_distribution(mask=1-abs(s.flatten())))#append distribution. mask from current state, not next state
+                    if self.sym:#update all bandits which are symmetric to each other
+                        sym_list = self.get_sym(s, False)
+                        for i in sym_list:
+                            # print('update')
+                            # print(f'state = {np.frombuffer(i,dtype=np.int8)}, mask = {np.frombuffer(mask,dtype=np.int8)}')
+                            self.params[player]['bandits'][(h,i)].update(self.agent_action[player],
+                                                                   (0.5 * 8 + 1 - reward - next_V) / (0.5 * 8 + 1))
+                            self.params[player]['policies'][(h,i)].append(#store policies on a per state basis, not group of symmetry states
+                                self.params[player]['bandits'][(h,i)].get_distribution(mask=1-abs(np.frombuffer(i,dtype=np.int8))))
+                    else:
+                        self.params[player]['bandits'][key].update(self.agent_action[player],(0.5*8+1-reward-next_V)/(0.5*8+1))
+                        self.params[player]['policies'][key].append(self.params[player]['bandits'][key].get_distribution(mask=1-abs(s.flatten())))#append distribution. mask from current state, not next state
             self.env.close()
-
-    def get_output_policy_sparse(self):
-            """
-            Build a sparse policy dict, showing a tqdm bar while iterating
-            over exactly the (h,s) pairs that were visited in training.
-            Returns:
-                sparse_policy: { h: { s: length-A numpy array } }
-            """
-
-            # 1) Extract unique (h,s) pairs from stored_distributions' keys
-            visited_pairs = {(h, s) for (h, s, i) in self.stored_distributions.keys()}
-            total = len(visited_pairs)
-            print(f">>> Number of visited (h,s) pairs = {total}")
-            # Initialize an empty nested dict only for visited entries
-            sparse_policy = {h: {} for h in range(self.H)}
-
-            # 2) Iterate over visited_pairs with a progress bar
-            for (h, s) in tqdm(visited_pairs, desc="Building policy", total=total):
-                t = self.N_count[h, s]  # number of visits
-
-                # Build all α_i = (H+1)/(H + i) for i=1..t
-                alpha_vec = np.array([(self.H + 1) / float(self.H + i) for i in range(1, t + 1)])
-
-                # Now form the “product term” ∏_{j=i+1..t} (1 – α_j) in one backward pass:
-                weights = np.empty(t, dtype=float)
-                prod = 1.0
-                for idx in range(t - 1, -1, -1):
-                    # idx = i-1 in zero-based indexing, corresponding to “i = idx+1”
-                    weights[idx] = alpha_vec[idx] * prod
-                    prod *= (1.0 - alpha_vec[idx])
-
-                # Normalize so that ∑_{i=1}^t weights[i-1] = 1
-                weights /= weights.sum()
-
-                # Mix all stored distributions for (h,s)
-                dist_mix = np.zeros(self.A)
-                for (i, w) in enumerate(weights, start=1):
-                    dist_mix += w * self.stored_distributions[(h, s, i)]
-
-                sparse_policy[h][s] = dist_mix
-
-            return sparse_policy
 
     def sample_output_policy(self,state,h:int,k:int)->dict:
         # input k = np.random.randint(self.K) sampled from [0,K-1]. Use same k for all timestep
         # state should be from player_1 observation only for both players
-        key = (h,state.tobytes())
+        key = (h,self.get_sym(state)) if self.sym else (h,state.tobytes())
         policies = {}
         for agent in self.agents:
             t = bisect.bisect_left(self.params[agent]['N_count'][key],k) #number of visits before kth episode
@@ -173,66 +171,114 @@ class VLearning:
             i = np.random.choice(t+1, p=alpha_probs/alpha_probs.sum()) #sample i from [0,t]. alpha_probs not exactly sum to 1 due to rounding errors.
             #episode when (h,s) visited for the ith time.
             # k = self.params[agent]['N_count'][key][i-1] #index from 0
-            a = np.random.choice(9,p=self.params[agent]['policies'][key][i-1]) #policy before ith visit. hard coded action space size.
+            a = np.random.choice(9,p=self.params[agent]['policies'][(h,state.tobytes())][i-1]) if self.sym else np.random.choice(9,p=self.params[agent]['policies'][key][i-1]) #policy before ith visit. hard coded action space size.
             policies[agent] = a
         return policies
 
 def get_state(env):
     return env.observe('player_1')['observation'][:, :, 0] - env.observe('player_1')['observation'][:, :, 1]
 
-def play(vlearn,opponent = 'player_2',selfplay = False):
+def play(vlearn=None,opponent = 'player_2',watch = False,eval=False,eps=1e6):
     env = tictactoe_v3.env()
     env.reset(seed=42)
-    k = np.random.randint(alg.K) #for output policy
     assert opponent in env.agents
     h=0
-    if selfplay:
-        for agent in env.agent_iter():
-            h+=1
-            observation, reward, termination, truncation, info = env.last()
-            s =  env.observe('player_1')['observation'][:, :, 0] - env.observe('player_1')['observation'][:, :, 1]
-            print(s)
-            if termination:
-                if env.rewards['player_1'] == env.rewards['player_2']:
-                    print('draw')
-                elif env.rewards['player_1'] > env.rewards['player_2']:
-                    print('player 1 wins')
-                else:
-                    print('player 2 wins')
-                break
+    if vlearn is not None:
+        k = {'player_1': np.random.randint(alg.K),
+             'player_2': np.random.randint(alg.K)}  # for output policy, different random seed for product policy
+        if eval:
+            res = defaultdict(int)
+            for ep in range(int(eps)):
+                env.reset()
+                h=0
+                k = {'player_1': np.random.randint(alg.K),
+                     'player_2': np.random.randint(alg.K)}
+                for agent in env.agent_iter():
+                    h+=1
+                    observation, reward, termination, truncation, info = env.last()
+                    s = env.observe('player_1')['observation'][:, :, 0] - env.observe('player_1')['observation'][:, :,1]
+                    if termination:
+                        if env.rewards['player_1'] == env.rewards['player_2']:
+                            res['draw']+=1
+                        elif env.rewards['player_1'] > env.rewards['player_2']:
+                            res['player 1 wins']+=1
+                        else:
+                            res['player 2 wins']+=1
+                        break
 
-            action = alg.sample_output_policy(s, h, k)[agent]
-            print(f'{agent} chooses action {action}')
-            env.step(action)
+                    action = alg.sample_output_policy(s, h, k[agent])[agent]
+                    env.step(action)
+
+        if watch:
+            for agent in env.agent_iter():
+                h+=1
+                observation, reward, termination, truncation, info = env.last()
+                s =  env.observe('player_1')['observation'][:, :, 0] - env.observe('player_1')['observation'][:, :, 1]
+                print(s)
+                if termination:
+                    if env.rewards['player_1'] == env.rewards['player_2']:
+                        print('draw')
+                    elif env.rewards['player_1'] > env.rewards['player_2']:
+                        print('player 1 wins')
+                    else:
+                        print('player 2 wins')
+                    break
+
+                action = alg.sample_output_policy(s, h, k[agent])[agent]
+                print(f'{agent} chooses action {action}')
+                env.step(action)
+
+        else:
+            for agent in env.agent_iter():
+                h+=1
+                observation, reward, termination, truncation, info = env.last()
+                s =  env.observe('player_1')['observation'][:, :, 0] - env.observe('player_1')['observation'][:, :, 1]
+                print(s)
+                if termination:
+                    if env.rewards['player_1'] == env.rewards['player_2']:
+                        print('draw')
+                    elif env.rewards[opponent] < 0:
+                        print('you win')
+                    else:
+                        print('you lose')
+                    break
+                if opponent != agent:
+                    print('your move')
+                    action = int(input())
+                    env.step(action)
+                else:
+                    action = alg.sample_output_policy(s,h,k[opponent])[opponent]
+                    print(f'opponent chooses action {action}')
+                    env.step(action)
+        env.close()
 
     else:
-        for agent in env.agent_iter():
-            h+=1
-            observation, reward, termination, truncation, info = env.last()
-            s =  env.observe('player_1')['observation'][:, :, 0] - env.observe('player_1')['observation'][:, :, 1]
-            print(s)
-            if termination:
-                if env.rewards['player_1'] == env.rewards['player_2']:
-                    print('draw')
-                elif env.rewards[opponent] < 0:
-                    print('you win')
-                else:
-                    print('you lose')
-                break
-            if opponent != agent:
-                print('your move')
-                action = int(input())
-                env.step(action)
-            else:
-                action = alg.sample_output_policy(s,h,k)[opponent]
-                print(f'opponent chooses action {action}')
-                env.step(action)
-    env.close()
+        res = defaultdict(int)
+        for ep in range(int(eps)):
+            env.reset()
 
+            for agent in env.agent_iter():
+                observation, reward, termination, truncation, info = env.last()
+                if termination or truncation:
+                    if env.rewards['player_1'] == env.rewards['player_2']:
+                        res['draw']+=1
+                    elif env.rewards['player_1'] == 1:
+                        res['player 1 wins']+=1
+                    else:
+                        res['player 2 wins']+=1
+                    break
+
+                else:
+                    mask = observation["action_mask"]
+                    # this is where you would insert your policy
+                    action = env.action_space(agent).sample(mask)
+                env.step(action)
+            env.close()
+        return res
 en = tictactoe_v3.env()
 en.reset(seed=42)
 # K=10460353203*5
-alg = VLearning(en,1000000,9,0.005)
+alg = VLearning(en,10,9,0.005,True)
 alg.train()
 # play(alg)
 
