@@ -282,6 +282,7 @@ en.reset(seed=42)
 alg = VLearning(en,10**6,9,0.01,True)
 alg.train()
 res = play(alg,eval=True,eps = 1000)
+print(res['draw']/1000)
 
 #epsilon bound. delta = 0.01
 # print(np.sqrt(9**5*(3**9)*9*np.log(9*(3**9)*9*K/0.01)/K))
