@@ -188,7 +188,7 @@ def play(vlearn=None,opponent = 'player_2',watch = False,eval=False,eps=1e6):
              'player_2': np.random.randint(alg.K)}  # for output policy, different random seed for product policy
         if eval:
             res = defaultdict(int)
-            for ep in range(int(eps)):
+            for ep in trange(1, eps + 1, desc="Simulating Episodes"):
                 env.reset()
                 h=0
                 k = {'player_1': np.random.randint(alg.K),
@@ -279,9 +279,9 @@ def play(vlearn=None,opponent = 'player_2',watch = False,eval=False,eps=1e6):
 en = tictactoe_v3.env()
 en.reset(seed=42)
 # K=10460353203*5
-alg = VLearning(en,10**6,9,0.005,True)
+alg = VLearning(en,10**6,9,0.01,True)
 alg.train()
-# play(alg)
+res = play(alg,eval=True,eps = 1000)
 
 #epsilon bound. delta = 0.01
 # print(np.sqrt(9**5*(3**9)*9*np.log(9*(3**9)*9*K/0.01)/K))
